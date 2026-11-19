@@ -6,6 +6,12 @@ The tools process files locally in the browser. This repository contains only th
 
 ## Pages
 
-- `index.html` — OAE file formatter
-- `csv-viewer.html` — CSV previewer
-- `csv_processor.html` — OAE CSV processor
+- [OAE CSV 檔案處理器](https://c54076055.github.io/OAE-file-transform-yfcheng-lab-/)
+- [CSV 預覽器](https://c54076055.github.io/OAE-file-transform-yfcheng-lab-/csv-viewer.html)
+- `csv_processor.html` 會導向首頁。
+
+處理器支援多檔匯入。確認每筆檔案的耳別與頻率（kHz）後，按「計算」即可預覽並下載 CSV。修改輸入後須重新計算。
+
+## 開發與驗收
+
+在此目錄執行 `python -m http.server 8047` 後，開啟 `http://localhost:8047/`。執行 `node --test formatter.test.mjs` 可重跑合成資料的計算與匯出測試。規格與輸出比對紀錄見 [SPEC.md](SPEC.md)。
