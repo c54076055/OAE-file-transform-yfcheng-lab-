@@ -50,6 +50,14 @@
 
 用 Python 3.8.19 執行 `python test/generate_python_baseline.py <tool.py 或 tool.pyc>` 可重建合成資料與基準。以 `node --test formatter.test.mjs` 比對所有案例。以 `python test/check_browser.py <站台網址> --chrome <瀏覽器執行檔>` 驗證匯入、耳別、頻率、預覽與下載。
 
+### 發布驗收紀錄
+
+- 功能提交為 `db02ea7bf3c27d79f74ecc7c0b2886d4fefa23a3`。GitHub Pages 由 `main` 根目錄部署，建置與部署均成功。[部署紀錄](https://github.com/c54076055/OAE-file-transform-yfcheng-lab-/actions/runs/44505180368)
+- Node.js 通過 18 項測試。Windows 的 Chrome 和 Edge 在本機與公開站各通過 17 組桌面基準案例。[公開首頁](https://c54076055.github.io/OAE-file-transform-yfcheng-lab-/)
+- 14 組成功案例的 CSV 位元組與檔名一致。3 組零列通過案例均顯示錯誤並停用下載。瀏覽器測試也核對預覽內容及修改輸入後的失效狀態。
+- 公開站的舊處理器入口會導向首頁。獨立預覽器可匯入合成 CSV。處理器測試期間沒有上傳檔案。
+- 發布前已核對提交清單。測試輸入與預期輸出由測試腳本合成。發布內容未包含桌面執行檔或原始量測資料。
+
 ## 目標
 
 從 GitHub Pages 首頁即可匯入 CSV、確認左右耳與頻率、計算、預覽結果並下載 CSV。介面沿用現有 `csv_processor.html` 的左右耳配置，計算與匯出沿用現有 `index.html` 的處理流程。
