@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OAE file formatter</title>
+    <!-- Danfo.js and dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/danfojs@1.1.2/lib/bundle.js"></script>
+    <!-- Bootstrap for styling -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .container {
+            margin-top: 30px;
+        }
+        #dropArea {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            cursor: pointer;
+        }
+        #dropArea.highlight {
+            border-color: #007bff;
+            background-color: #f8f9fa;
+        }
+        table {
+            font-size: 0.9em;
+        }
+        .loading {
+            display: none;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="mb-4">OAE file formatter</h1>
+        
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Upload CSV Files</h5>
+                <div id="dropArea" class="mb-3">
+                    <p>Drag and drop CSV files here or click to select files</p>
+                    <input type="file" id="fileInput" multiple accept=".csv" style="display: none;">
+                </div>
+                <div id="fileList" class="list-group mb-3"></div>
+                <div class="mb-2">
+                    <label for="thresholdCoef" class="form-label">Threshold Coefficient:</label>
+                    <input type="number" id="thresholdCoef" class="form-control" value="2" min="0" step="0.1">
+                </div>
+                <button id="processBtn" class="btn btn-primary" disabled>Process Files</button>
+                <button id="downloadBtn" class="btn btn-success ms-2" disabled>Download Results</button>
+                <div id="loading" class="loading">
+                    <div class="d-flex justify-content-center">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                    <p class="text-center mt-2">Processing data, please wait...</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Results</h5>
+                <div id="resultsTable" class="table-responsive"></div>
+            </div>
+        </div>
+        <p>ver 2025.05.12 © 2025 YU JHIH-WEI, ROC(Taiwan). All Rights Reserved.</p>
+    </div>
+
+    <script>//type="module">
+        // Import the frequency analysis module
+        // Note: In a real application, you'd import from a file
+        // For this demo, we'll include the code directly
+        
+        // Convert dBv to dB SPL
+        function dbv2dbspl(dBv) {
+          // Convert to array if not already
+          const dBvArray = Array.isArray(dBv) ? dBv : [dBv];
+          
+          // Convert to float and apply formula
+          return dBvArray.map(val => {
+            const floatVal = parseFloat(val);
+            return 20 * Math.log10((Math.pow(10, floatVal / 20)) / 0.05) + 93.9;
+          });
+        }
+
+
+        // Equivalent to Python's FrequencyData class
+        class FrequencyData {
+          constructor(freq, RL) {
+            this.freq = freq;
+            this.RL = RL;
+            this.path = ".";
+            this.value = parseFloat(freq); // To mimic float.__new__ behavior
+          }
+
+          addV3(v3) {
+            // Add v3 and spl(v3) to self
+            this.v3dbv = v3;
+            this.v3spl = dbv2dbspl(v3);
+            return v3;
+          }
+
+          addPara(paraDf) {
+            this.paraDf = paraDf;
+
+            // Save v3
+            this.addV3(paraDf.column("V3(dBv)").values);
+
+            // Extract frequency (to str variable)
+            const freqVal = paraDf.column("AudFreq()").values[0];
+            if (freqVal % 1000 > 0) {
+              this.freq = (freqVal / 1000);
+            } else {
+              this.freq = Math.floor(freqVal / 1000);
+            }
+
+            // Generate index column
+            const index = ["85_75", "75_65", "65_55", "55_45", "45_35", "35_25", "25_15"];
+            const freqKey = `${this.freq}k`;
+            const indexData = {};
+            indexData[freqKey] = index;
+            this.indexCol = new dfd.DataFrame(indexData);
+          }
+
+          addData(dataDf) {
+            // Extract the columns where value equals v3dbv
+            // This is more complex in JavaScript compared to Python's df.T[df.T==val].T
+            
+            // First find the column index that has the v3dbv value
+            const columns = dataDf.columns;
+            let binIndex = -1;
+            
+            for (let i = 0; i < columns.length; i++) {
+              const colValues = dataDf.column(columns[i]).values;
+              if (colValues.includes(this.v3dbv[0])) {
+                binIndex = parseInt(columns[i]);
+                break;
+              }
+            }
+
+            if (binIndex === -1) {
+              console.error("Couldn't find v3dbv value in data");
+              return;
+            }
+
+            // Get surrounding columns (10 before and 10 after)
+            const startIdx = Math.max(0, binIndex - 10);
+            const endIdx = Math.min(columns.length - 1, binIndex + 10);
+            
+            // Extract only the needed columns
+            const selectedCols = columns.filter(col => {
+              const colIdx = parseInt(col);
+              return colIdx >= startIdx && colIdx <= endIdx && colIdx !== binIndex;
+            });
+            
+            // Create a new DataFrame with just these columns
+            this.anlyDf = dataDf.loc({ columns: selectedCols });
+          }
+
+          calculate(coef = 2) {
+            // Analyze dbv
+            // Calculate NF, NFSD (dBv)
+            const NFdbv = this.anlyDf.values.map(row => row.map(val => parseFloat(val)));
+            
+            // Calculate mean and std along rows
+            const NFdbvAVG = NFdbv.map(row => {
+              const sum = row.reduce((a, b) => a + b, 0);
+              return sum / row.length;
+            });
+            
+            const NFdbvSD = NFdbv.map((row, i) => {
+              const mean = NFdbvAVG[i];
+              const squaredDiffs = row.map(val => Math.pow(val - mean, 2));
+              const sum = squaredDiffs.reduce((a, b) => a + b, 0);
+              return Math.sqrt(sum / row.length);
+            });
+
+            // Merge to dBv dataframe
+            const nDf = new dfd.DataFrame({
+              "dBv": this.v3dbv,
+              "NF": NFdbvAVG,
+              "NF_SD": NFdbvSD
+            });
+            
+            this.dbvDf = dfd.concat({ dfList: [this.indexCol, nDf], axis: 1 });
+
+            // Analyze spl
+            // Calculate spl
+            const NFspl = NFdbv.map(row => dbv2dbspl(row));
+            
+            const NFsplAVG = NFspl.map(row => {
+              const sum = row.reduce((a, b) => a + b, 0);
+              return sum / row.length;
+            });
+            
+            const NFsplSD = NFspl.map((row, i) => {
+              const mean = NFsplAVG[i];
+              const squaredDiffs = row.map(val => Math.pow(val - mean, 2));
+              const sum = squaredDiffs.reduce((a, b) => a + b, 0);
+              return Math.sqrt(sum / row.length);
+            });
+
+            // Check thresholds
+            const passThres = NFsplAVG.map((nf, i) => 
+              this.v3spl[i] > (nf + coef * NFsplSD[i]));
+            
+            const thresCheck = passThres.map(pass => pass ? "pass" : "fail");
+
+            // Create SPL dataframe
+            const splDf = new dfd.DataFrame({
+              "dB SPL": this.v3spl,
+              "NF(dB SPL)": NFsplAVG,
+              "NF_SD": NFsplSD,
+              "Threshold": thresCheck
+            });
+            
+            this.splDf = dfd.concat({ dfList: [this.indexCol, splDf], axis: 1 });
+
+            // Generate threshold table
+            // Number of "pass" is related to threshold
+            const passNum = passThres.filter(Boolean).length;
+            const thresList = ["75+", 75, 65, 55, 45, 35, 25, 15];
+            this.threshold = thresList[passNum]; 
+            
+            if (passNum === 0) {
+              this.thresNF = "NA";
+            } else {
+              this.thresNF = NFsplAVG[passNum - 1];
+            }
+          }
+        }
+
+        // Helper function to vertically concatenate DataFrames
+        function verticalConcat(concatList) {
+          // Transform each DataFrame to have its header as first row
+          const transformedDfs = concatList.map(df => {
+            const values = df.values;
+            const columns = df.columns;
+            
+            // Create new rows with header as first row
+            const newRows = [columns, ...values];
+            
+            // Create a new DataFrame with these rows
+            return new dfd.DataFrame(newRows);
+          });
+          
+          // Concatenate all DataFrames vertically
+          const result = dfd.concat({ dfList: transformedDfs,
+                                    axis: 0,
+                                    resetIndex: false});
+          
+          // Replace NaN with spaces
+          return result.fillNa(" ");
+        }
+
+
+        // Helper function to horizontally concatenate DataFrames
+        function columnsToFirstRow(df) {
+          // 1. 取得列名陣列
+          const columns = df.columns;
+          
+          // 2. 取得原始值
+          let values = df.values;
+          
+          // 3. 在值的開頭插入列名陣列
+          values.unshift(columns);
+          
+          // 4. 建立新的 DataFrame
+          return new dfd.DataFrame(values);
+        }
+        function horizontalConcat(concatList) {
+          // 串接所有 DataFrame
+          const concatDf = dfd.concat({ 
+            dfList: concatList,
+            axis: 1
+          });
+          // 將每個 DataFrame 的列名轉換為第一列
+          transformedDfs = columnsToFirstRow(concatDf);
+          transformedDfs[3].print();
+          console.log(transformedDfs.length);
+          // 替換 NaN 為空格
+          return result.fillNa(" ");
+        }
+
+        // Main Formatter class 
+        class Formatter {
+          constructor(fileList = [], name = null, dataDir = null) {
+            this.fileList = fileList;
+            this.dataDir = dataDir || ".";
+            this.allDict = {
+              "L": [],
+              "R": [],
+              "Unknown": []
+            };
+
+            if (name === null) {
+              // Handle multiple files case
+              if (fileList.length > 1) {
+                const name1 = fileList[0].name.split("/").pop().split("\\").pop().split(".csv")[0];
+                const name2 = fileList.length > 2 ? fileList[2].name : fileList[1].name;
+                const name2Clean = name2.split("/").pop().split("\\").pop().split(".csv")[0];
+                
+                // Find common prefix
+                let commonPrefix = "";
+                for (let i = 0; i < name1.length; i++) {
+                  if (i >= name2Clean.length || name1[i] !== name2Clean[i]) {
+                    break;
+                  }
+                  commonPrefix += name1[i];
+                }
+                this.name = commonPrefix;
+              } else if (fileList.length === 1) {
+                this.name = fileList[0].name.split("/").pop().split("\\").pop().split(".csv")[0];
+              } else {
+                this.name = null;
+              }
+            } else {
+              this.name = name;
+            }
+          }
+
+          editName(name) {
+            this.name = name;
+          }
+
+          editDataDir(dataDir) {
+            this.dataDir = dataDir;
+          }
+
+          async csv2class(file) {
+            try {
+              // Convert File object to DataFrame
+              const df = await dfd.readCSV(file);
+              
+              // Extract filename for LR determination
+              const fileName = file.name.split(".csv")[0];
+              
+              let LR = "Unknown";
+              if (fileName.includes("_L") || fileName.endsWith("L")) {
+                LR = "L";
+              } else if (fileName.includes("_R") || fileName.endsWith("R")) {
+                LR = "R";
+              } else {
+                return new dfd.DataFrame();
+              }
+
+              // Extract parameters
+              const paraCols = ["AudFreq()", "F1(hz)", "V1(dBv)", "F2(hz)", "V2(dBv)", "F3(hz)", "V3(dBv)"];
+              const paraDf = df.loc({ columns: paraCols });
+              
+              // Extract frequency
+              const freq = paraDf.column("AudFreq()").values[0] / 1000;
+
+              // Extract data points (columns after index 12)
+              const dataCols = df.columns.slice(13);
+              const dataDf = df.loc({ columns: dataCols });
+
+              // Extract V3
+              const v3 = paraDf.column("V3(dBv)").values;
+
+              // Format to class
+              const singleData = new FrequencyData(freq, LR);
+              singleData.addV3(v3);
+              singleData.addPara(paraDf);
+              singleData.addData(dataDf);
+              singleData.path = file.name;
+
+              this.allDict[LR].push(singleData);
+
+              return singleData;
+            } catch (error) {
+              console.error("Error processing CSV file:", file.name, error);
+              return null;
+            }
+          }
+
+          async loadData() {
+            // Process all files
+            const promises = this.fileList.map(file => this.csv2class(file));
+            await Promise.all(promises);
+            
+            // Sort the data
+            for (const LR of ["L", "R"]) {
+              this.allDict[LR].sort((a, b) => a.value - b.value);
+            }
+            
+            return this.allDict;
+          }
+
+          async addData(file) {
+            this.fileList.push(file);
+            await this.csv2class(file);
+            
+            // Re-sort after adding
+            for (const LR of ["L", "R"]) {
+              this.allDict[LR].sort((a, b) => a.value - b.value);
+            }
+          }
+
+          delData() {
+            // Placeholder for deleting data
+          }
+
+          calculateAll(thresholdCoef = 2) {
+            // Sort data
+            this.allDict["L"].sort((a, b) => a.value - b.value);
+            this.allDict["R"].sort((a, b) => a.value - b.value);
+
+            // Combine all objects
+            const ALLobject = [
+              ...this.allDict["L"],
+              ...this.allDict["R"],
+              ...this.allDict["Unknown"]
+            ];
+            
+            // Calculate for each object
+            ALLobject.forEach(obj => obj.calculate(thresholdCoef));
+
+            // Create threshold tables
+            for (const LR of ["L", "R"]) {
+              const freqArr = [];
+              const thresArr = [];
+              const NFarr = [];
+              
+              for (const data of this.allDict[LR].sort((a, b) => a.value - b.value)) {
+                NFarr.push(data.thresNF);
+                thresArr.push(data.threshold);
+                freqArr.push(`${data.freq}k`);
+              }
+              
+              this.allDict[`ThresTable_${LR}`] = new dfd.DataFrame({
+                "  ": freqArr,
+                "Threshold": thresArr,
+                "NF": NFarr
+              });
+            }
+            
+            return this.allDict;
+          }
+
+          format() {
+            const lNum = this.allDict["L"].length;
+            const rNum = this.allDict["R"].length;
+            const num = Math.max(lNum, rNum);
+            const rowNum = Math.max(9, num + 1);
+            
+            // Create blank columns
+            const LblankData = {};
+            LblankData["L"] = Array(rowNum).fill(" ");
+            const LblankCol = new dfd.DataFrame(LblankData);
+            
+            const RblankData = {};
+            RblankData["R"] = Array(rowNum).fill(" ");
+            const RblankCol = new dfd.DataFrame(RblankData);
+
+            // Concat Left data horizontally
+            const lDbv = this.allDict["L"].map(item => item.splDf);
+            const lSpl = this.allDict["L"].map(item => item.dbvDf);
+            const l = dfd.concat({ dfList: [LblankCol, ...lSpl, LblankCol, ...lDbv, LblankCol, this.allDict["ThresTable_L"]],
+                                    axis: 1,
+                                    resetIndex: false});
+            // const l = horizontalConcat([LblankCol, ...lSpl, LblankCol, ...lDbv, LblankCol, this.allDict["ThresTable_L"]]);
+
+            // Concat Right data horizontally
+            const rDbv = this.allDict["R"].map(item => item.splDf);
+            const rSpl = this.allDict["R"].map(item => item.dbvDf);
+            const r = dfd.concat({ dfList: [RblankCol, ...rSpl, RblankCol, ...rDbv, RblankCol, this.allDict["ThresTable_R"]],
+                                    axis: 1,
+                                    resetIndex: false});
+
+            // const r = horizontalConcat([RblankCol, ...rSpl, RblankCol, ...rDbv, RblankCol, this.allDict["ThresTable_R"]]);
+
+            // Concat left and right data vertically
+            this.csv = verticalConcat([l, r]);
+            return this.csv;
+          }
+
+          async to_csv(path = null) {
+            if (!path) {
+              if (!this.name) {
+                path = "output.csv";
+              } else {
+                path = `${this.name}_output.csv`;
+              }
+            } else if (!path.endsWith(".csv")) {
+              path = `${path}.csv`;
+            }
+            
+            // Export to CSV (using Danfo.js export methods)
+            // const csvContent = await this.csv.toCSV({ fileName: "testOut.csv", download: true});
+            dfd.toCSV(this.csv,{ fileName: "testOut.csv", download: true});
+            
+            // For browser, create a download link
+            // const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            // const url = URL.createObjectURL(blob);
+            // const link = document.createElement('a');
+            // link.setAttribute('href', url);
+            // link.setAttribute('download', path);
+            // link.style.visibility = 'hidden';
+            // document.body.appendChild(link);
+            // link.click();
+            // document.body.removeChild(link);
+          }
+        }
+
+        // UI Event Handlers
+        const dropArea = document.getElementById('dropArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const processBtn = document.getElementById('processBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const resultsTable = document.getElementById('resultsTable');
+        const loadingIndicator = document.getElementById('loading');
+        const thresholdCoefInput = document.getElementById('thresholdCoef');
+        
+        let uploadedFiles = [];
+        let formatter = null;
+        
+        // Handle drag and drop events
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+          dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+          dropArea.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+          dropArea.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight() {
+          dropArea.classList.add('highlight');
+        }
+        
+        function unhighlight() {
+          dropArea.classList.remove('highlight');
+        }
+        
+        // Handle file drop
+        dropArea.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+          const dt = e.dataTransfer;
+          const files = dt.files;
+          handleFiles(files);
+        }
+        
+        // Handle click on drop area
+        dropArea.addEventListener('click', () => {
+          fileInput.click();
+        });
+        
+        // Handle file selection via input
+        fileInput.addEventListener('change', (e) => {
+          handleFiles(e.target.files);
+        });
+        
+        // Process selected files
+        function handleFiles(files) {
+          if (files.length === 0) return;
+          
+          // Filter only CSV files
+          const csvFiles = Array.from(files).filter(file => file.name.endsWith('.csv'));
+          
+          if (csvFiles.length === 0) {
+            alert('Please select CSV files only.');
+            return;
+          }
+          
+          // Add files to list
+          uploadedFiles = [...uploadedFiles, ...csvFiles];
+          updateFileList();
+          
+          // Enable process button if files are available
+          processBtn.disabled = uploadedFiles.length === 0;
+        }
+        
+        // Update the file list display
+        function updateFileList() {
+          fileList.innerHTML = '';
+          
+          uploadedFiles.forEach((file, index) => {
+            const item = document.createElement('div');
+            item.className = 'list-group-item d-flex justify-content-between align-items-center';
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = file.name;
+            item.appendChild(nameSpan);
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'btn btn-sm btn-danger';
+            removeBtn.textContent = 'Remove';
+            removeBtn.onclick = () => {
+              uploadedFiles.splice(index, 1);
+              updateFileList();
+              processBtn.disabled = uploadedFiles.length === 0;
+            };
+            item.appendChild(removeBtn);
+            
+            fileList.appendChild(item);
+          });
+        }
+        
+        // Process button click handler
+        processBtn.addEventListener('click', async () => {
+          if (uploadedFiles.length === 0) return;
+          
+          try {
+            loadingIndicator.style.display = 'block';
+            resultsTable.innerHTML = '';
+            downloadBtn.disabled = true;
+            
+            // Create new formatter with uploaded files
+            formatter = new Formatter(uploadedFiles);
+            
+            // Load and process data
+            await formatter.loadData();
+            formatter.calculateAll(parseFloat(thresholdCoefInput.value));
+            const formattedData = formatter.format();
+            
+            // Display results
+            displayResults(formattedData);
+            
+            // Enable download button
+            downloadBtn.disabled = false;
+          } catch (error) {
+            console.error('Error processing data:', error);
+            alert('Error processing data. Check console for details.');
+          } finally {
+            loadingIndicator.style.display = 'none';
+          }
+        });
+        
+        // Download button click handler
+        downloadBtn.addEventListener('click', async () => {
+          if (!formatter) return;
+          
+          try {
+            await formatter.to_csv();
+          } catch (error) {
+            console.error('Error generating CSV:', error);
+            alert('Error generating CSV. Check console for details.');
+          }
+        });
+        
+        // Display results in table
+        function displayResults(dataFrame) {
+          // Create HTML table from DataFrame
+          const table = document.createElement('table');
+          table.className = 'table table-sm table-bordered';
+          
+          // Create header
+          const thead = document.createElement('thead');
+          const headerRow = document.createElement('tr');
+          
+          dataFrame.columns.forEach(column => {
+            const th = document.createElement('th');
+            th.textContent = column;
+            headerRow.appendChild(th);
+          });
+          
+          thead.appendChild(headerRow);
+          table.appendChild(thead);
+          
+          // Create body
+          const tbody = document.createElement('tbody');
+          
+          dataFrame.values.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            row.forEach(cell => {
+              const td = document.createElement('td');
+              td.textContent = cell;
+              
+              // Color coding for pass/fail
+              if (cell === 'pass') {
+                td.className = 'bg-success text-white';
+              } else if (cell === 'fail') {
+                td.className = 'bg-danger text-white';
+              }
+              
+              tr.appendChild(td);
+            });
+            
+            tbody.appendChild(tr);
+          });
+          
+          table.appendChild(tbody);
+          resultsTable.appendChild(table);
+        }
+      </script>
+    </div>
+</body>
+</html>

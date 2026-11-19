@@ -1,0 +1,13 @@
+data/
+v1/
+*.csv
+*.awf
+*.xlsx
+*.zip
+*.crt
+*.pyc
+__pycache__/
+*.ipynb
+*.ui
+.env
+.env.*

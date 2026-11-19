@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV檔案預覽器</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+        }
+        
+        .drop-area {
+            border: 3px dashed #ccc;
+            border-radius: 10px;
+            padding: 50px;
+            text-align: center;
+            background-color: #f9f9f9;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+        
+        .drop-area.highlight {
+            border-color: #3498db;
+            background-color: #e8f4fc;
+        }
+        
+        .file-info {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            overflow-x: auto;
+            display: block;
+        }
+        
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        
+        th {
+            background-color: #f2f2f2;
+            position: sticky;
+            top: 0;
+        }
+        
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        
+        .preview-container {
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+        
+        .button {
+            background-color: #3498db;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+            font-size: 16px;
+        }
+        
+        .button:hover {
+            background-color: #2980b9;
+        }
+        
+        #file-input {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSV檔案預覽器</h1>
+    
+    <div class="drop-area" id="drop-area">
+        <p>拖放CSV檔案到此處，或者</p>
+        <input type="file" id="file-input" accept=".csv" />
+        <button class="button" onclick="document.getElementById('file-input').click()">選擇檔案</button>
+    </div>
+    
+    <div class="file-info" id="file-info">
+        <h2>檔案資訊</h2>
+        <p><strong>檔名：</strong><span id="file-name"></span></p>
+        <p><strong>檔案大小：</strong><span id="file-size"></span></p>
+        <p><strong>資料列數：</strong><span id="row-count"></span></p>
+        <p><strong>資料欄數：</strong><span id="column-count"></span></p>
+    </div>
+    
+    <div id="preview-container" class="preview-container" style="display: none;">
+        <h2>CSV預覽</h2>
+        <div id="csv-preview"></div>
+    </div>
+    
+    <script>
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('file-input');
+        const fileInfo = document.getElementById('file-info');
+        const fileName = document.getElementById('file-name');
+        const fileSize = document.getElementById('file-size');
+        const rowCount = document.getElementById('row-count');
+        const columnCount = document.getElementById('column-count');
+        const previewContainer = document.getElementById('preview-container');
+        const csvPreview = document.getElementById('csv-preview');
+        
+        // 防止瀏覽器預設的拖放行為
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        // 拖放區域視覺效果
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight() {
+            dropArea.classList.add('highlight');
+        }
+        
+        function unhighlight() {
+            dropArea.classList.remove('highlight');
+        }
+        
+        // 處理拖放檔案
+        dropArea.addEventListener('drop', handleDrop, false);
+        fileInput.addEventListener('change', handleFileSelect, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            
+            if (files.length > 0) {
+                processFile(files[0]);
+            }
+        }
+        
+        function handleFileSelect(e) {
+            const files = e.target.files;
+            
+            if (files.length > 0) {
+                processFile(files[0]);
+            }
+        }
+        
+        function processFile(file) {
+            // 驗證檔案是否為CSV
+            if (file.type !== 'text/csv' && !file.name.endsWith('.csv')) {
+                alert('請上傳CSV檔案！');
+                return;
+            }
+            
+            // 顯示檔案資訊
+            fileName.textContent = file.name;
+            fileSize.textContent = formatFileSize(file.size);
+            fileInfo.style.display = 'block';
+            
+            // 使用PapaParse解析CSV
+            Papa.parse(file, {
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    // 更新檔案資訊
+                    const data = results.data;
+                    rowCount.textContent = data.length;
+                    
+                    if (data.length > 0) {
+                        columnCount.textContent = Object.keys(data[0]).length;
+                    } else {
+                        columnCount.textContent = '0';
+                    }
+                    
+                    // 建立表格預覽
+                    displayCSVPreview(results);
+                },
+                error: function(error) {
+                    console.error('Error parsing CSV:', error);
+                    alert('解析CSV時發生錯誤：' + error);
+                }
+            });
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            
+            return parseFloat((bytes / Math.pow(1024, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function displayCSVPreview(results) {
+            // 清空預覽區域
+            csvPreview.innerHTML = '';
+            
+            if (results.data.length === 0) {
+                csvPreview.innerHTML = '<p>CSV檔案沒有資料。</p>';
+                previewContainer.style.display = 'block';
+                return;
+            }
+            
+            // 建立表格
+            const table = document.createElement('table');
+            
+            // 建立表頭
+            const thead = document.createElement('thead');
+            const headerRow = document.createElement('tr');
+            
+            // 使用第一行資料的鍵作為表頭
+            Object.keys(results.data[0]).forEach(key => {
+                const th = document.createElement('th');
+                th.textContent = key;
+                headerRow.appendChild(th);
+            });
+            
+            thead.appendChild(headerRow);
+            table.appendChild(thead);
+            
+            // 建立表格內容
+            const tbody = document.createElement('tbody');
+            
+            // 最多顯示前100行資料
+            const maxRows = Math.min(results.data.length, 100);
+            
+            for (let i = 0; i < maxRows; i++) {
+                const row = document.createElement('tr');
+                
+                Object.values(results.data[i]).forEach(value => {
+                    const td = document.createElement('td');
+                    td.textContent = value !== null && value !== undefined ? value : '';
+                    row.appendChild(td);
+                });
+                
+                tbody.appendChild(row);
+            }
+            
+            table.appendChild(tbody);
+            csvPreview.appendChild(table);
+            
+            // 如果有超過100行，顯示提示
+            if (results.data.length > 100) {
+                const message = document.createElement('p');
+                message.textContent = `註：僅顯示前100行資料，總共有 ${results.data.length} 行。`;
+                csvPreview.appendChild(message);
+            }
+            
+            previewContainer.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
