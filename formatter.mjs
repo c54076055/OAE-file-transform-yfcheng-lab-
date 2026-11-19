@@ -1,6 +1,8 @@
+import { toSPL } from './desktop-math.mjs';
+
 const parameters = ['AudFreq()', 'F1(hz)', 'V1(dBv)', 'F2(hz)', 'V2(dBv)', 'F3(hz)', 'V3(dBv)'];
 const levels = ['85_75', '75_65', '65_55', '55_45', '45_35', '35_25', '25_15'];
-const thresholds = ['75+', 75, 65, 55, 45, 35, 25, 15];
+const thresholds = [75, 65, 55, 45, 35, 25, 15];
 
 function readCSV(text) {
     text = text.replace(/^\uFEFF/, '');
@@ -20,6 +22,33 @@ function readCSV(text) {
     return rows;
 }
 
+// pandas 2.0.3 defaults to its 17-digit float converter for decimal CSV columns.
+const decimal = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i;
+const missingNumber = /^(?:|#N\/A(?: N\/A)?|#NA|-?1\.#(?:IND|QNAN)|-?NaN|<NA>|N\/A|NA|NULL|None|n\/a|nan|null)$/;
+
+function parseColumn(cells) {
+    const integer = cells.every(cell => /^[+-]?\d+$/.test(cell.trim()));
+    return cells.map(cell => {
+        const text = cell.trim();
+        if (missingNumber.test(cell)) return NaN;
+        if (/^[+-]?inf(?:inity)?$/i.test(text)) return text[0] === '-' ? -Infinity : Infinity;
+        const match = decimal.exec(text);
+        if (!match || !(match[2] || match[3])) return cell;
+        if (integer) return Number(text);
+        const [, sign, whole, fractional = '', exponent] = match;
+        const digits = (whole + fractional).slice(0, 17);
+        const scale = Number(exponent ?? 0) + whole.length - digits.length;
+        let value = 0;
+        for (const digit of digits) value = value * 10 + Number(digit);
+        if (sign === '-') value = -value;
+        if (scale > 308) return cell;
+        if (scale >= 0) return value * Number(`1e${scale}`);
+        if (scale >= -308) return value / Number(`1e${-scale}`);
+        if (scale < -616) return value * 0;
+        return (value / Number(`1e${-scale - 308}`)) / 1e308;
+    });
+}
+
 export function readMeasurement(text) {
     const [header = [], ...rows] = readCSV(text);
     const missing = parameters.filter(name => !header.includes(name));
@@ -27,21 +56,23 @@ export function readMeasurement(text) {
     if (rows.length !== levels.length || rows.some(row => row.length !== header.length)) {
         throw new Error('需要 7 列量測資料，且每列欄位數須與標題列相同。');
     }
-    const v3 = rows.map(row => row[header.indexOf('V3(dBv)')]);
+    const valueColumn = index => parseColumn(rows.map(row => row[index]));
+    const v3 = valueColumn(header.indexOf('V3(dBv)'));
     const bins = header.slice(13);
-    const numeric = value => value.trim() !== '' && Number.isFinite(Number(value));
-    if (!v3.every(numeric)) throw new Error('V3(dBv) 欄位含有無效數值。');
-    const peak = bins.findIndex((bin, index) => /^\d+$/.test(bin) && numeric(rows[0][index + 13])
-        && Number(rows[0][index + 13]) === Number(v3[0]));
-    if (peak === -1) throw new Error('頻譜中找不到第一列 V3(dBv) 對應的頻譜欄。');
+    if (v3.some(value => typeof value !== 'number')) throw new Error('V3(dBv) 欄位含有無效數值。');
+    const spectrum = bins.map((_, index) => valueColumn(index + 13));
+    const peak = spectrum.findIndex(column => column.every((value, index) => value === v3[index]));
+    if (peak === -1) throw new Error('頻譜中找不到與完整 V3(dBv) 序列相符的欄位。');
     const binNumber = Number(bins[peak]);
-    const neighbors = bins.flatMap((bin, index) =>
-        /^\d+$/.test(bin) && index !== peak && Math.abs(Number(bin) - binNumber) <= 10 ? [index + 13] : []);
-    const noise = rows.map(row => neighbors.map(index => row[index]));
-    if (!neighbors.length || !noise.every(row => row.every(numeric))) {
-        throw new Error('相鄰頻譜欄缺少有效的雜訊數值。');
+    if (!/^[-+]?\d+$/.test(bins[peak]) || !bins.includes(String(binNumber))) {
+        throw new Error('訊號欄的名稱須能對應整數欄號。');
     }
-    return { v3: v3.map(Number), noise: noise.map(row => row.map(Number)) };
+    const columns = spectrum.filter((_, index) => bins[index] !== String(binNumber));
+    const neighbors = columns.slice(binNumber - 10, binNumber + 10);
+    if (neighbors.some(column => column.some(value => typeof value !== 'number'))) {
+        throw new Error('相鄰頻譜欄含有無效數值。');
+    }
+    return { v3, noise: rows.map((_, index) => neighbors.map(column => column[index])) };
 }
 
 export function inferMetadata(name) {
@@ -53,12 +84,24 @@ export function inferMetadata(name) {
     return { ear, frequency: frequency > 0 ? String(frequency) : '', title };
 }
 
-const toSPL = dbv => 20 * Math.log10(10 ** (dbv / 20) / 0.05) + 93.9;
-
 function statistics(values) {
     const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+    const variance = values.reduce((sum, value) => {
+        const delta = value - mean;
+        return sum + delta * delta;
+    }, 0) / values.length;
     return [mean, Math.sqrt(variance)];
+}
+
+function pythonFloat(value) {
+    if (Number.isNaN(value)) return ' ';
+    if (!Number.isFinite(value)) return value < 0 ? '-inf' : 'inf';
+    if (Object.is(value, -0)) return '-0.0';
+    const magnitude = Math.abs(value);
+    if (magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16)) {
+        return value.toExponential().replace(/e([+-])(\d)$/, 'e$10$2');
+    }
+    return Number.isInteger(value) ? `${value}.0` : String(value);
 }
 
 function analyze({ measurement, frequency, name }, coefficient) {
@@ -70,18 +113,16 @@ function analyze({ measurement, frequency, name }, coefficient) {
         const signal = toSPL(measurement.v3[index]);
         const limit = mean + coefficient * sd;
         const dbvStats = statistics(noise);
-        if (![signal, limit, ...dbvStats].every(Number.isFinite)) {
-            throw new Error(`${name} 的數值超出計算範圍。`);
-        }
-        dbv.push([level, measurement.v3[index], ...dbvStats]);
-        spl.push([level, signal, mean, sd, signal > limit ? 'pass' : 'fail']);
+        dbv.push([level, ...[measurement.v3[index], ...dbvStats].map(pythonFloat)]);
+        spl.push([level, ...[signal, mean, sd].map(pythonFloat), signal > limit ? 'pass' : 'fail']);
     }
     const passes = spl.filter(row => row[4] === 'pass').length;
+    if (!passes) throw new Error(`${name}：零列通過，Python 桌面版無法取得摘要雜訊（KeyError: -1）。`);
     const label = `${Number(frequency)}k`;
     return {
         dbv: [[label, 'dBv', 'NF', 'NF_SD'], ...dbv],
         spl: [[label, 'dB SPL', 'NF(dB SPL)', 'NF_SD', 'Threshold'], ...spl],
-        summary: [label, thresholds[passes], passes ? spl[passes - 1][2] : 'NA'],
+        summary: [label, pythonFloat(thresholds[passes - 1]), spl[passes - 1][2]],
     };
 }
 
@@ -109,12 +150,9 @@ export function encodeCSV(rows) {
     return rows.map(row => row.map(value => {
         const cell = String(value);
         return /[",\r\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
-    }).join(',')).join('\r\n');
+    }).join(',')).join('\r\n') + '\r\n';
 }
 
 export function downloadName(title) {
-    const stem = title.trim().replace(/\.csv$/i, '')
-        .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '');
-    const reserved = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i;
-    return `${reserved.test(stem) ? '_' : ''}${Array.from(stem).slice(0, 120).join('') || 'output'}.csv`;
+    return title.trim() ? `${title}_output.csv` : 'output.csv';
 }

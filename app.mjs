@@ -148,7 +148,13 @@ async function importFiles(batch) {
     const entries = await Promise.all(batch.map(async file => {
         try {
             if (!/\.csv$/i.test(file.name)) throw new Error('只支援 .csv 檔案。');
-            const content = await file.text().catch(() => { throw new Error('無法讀取檔案。'); });
+            const bytes = await file.arrayBuffer().catch(() => { throw new Error('無法讀取檔案。'); });
+            let content;
+            try {
+                content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            } catch {
+                throw new Error('CSV 須使用 UTF-8 編碼。');
+            }
             return { id: nextId++, name: file.name, measurement: readMeasurement(content), ...inferMetadata(file.name) };
         } catch (error) {
             const item = document.createElement('li');
@@ -196,7 +202,9 @@ function showRows(rows) {
         for (const value of values) {
             const cell = document.createElement(['L', 'R'].includes(values[0]) ? 'th' : 'td');
             cell.textContent = value;
-            if (typeof value === 'number') cell.className = 'number';
+            if (/^[+-]?(?:\d|inf$)/.test(value) && !value.includes('_') && !value.endsWith('k')) {
+                cell.className = 'number';
+            }
             if (value === 'pass' || value === 'fail') cell.className = value;
             row.append(cell);
         }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { calculateRows, downloadName, encodeCSV, inferMetadata, readMeasurement } from './formatter.mjs';
 
@@ -13,17 +14,25 @@ function syntheticCSV(passes, hz) {
     return encodeCSV([header, ...rows]);
 }
 
-test('耳別與頻率採用介面值，門檻與雜訊符合基準', () => {
-    const files = [
-        { name: 'Demo 2k_L.csv', ear: 'R', frequency: '4.25', measurement: readMeasurement(syntheticCSV(3, 2000)) },
-        { name: 'Demo 1.5k_R.csv', ear: 'R', frequency: '1.5', measurement: readMeasurement(syntheticCSV(0, 1500)) },
-    ];
-    const rows = calculateRows(files, 2);
-    assert.deepEqual(rows[10].slice(0, 9), ['R', '1.5k', 'dBv', 'NF', 'NF_SD', '4.25k', 'dBv', 'NF', 'NF_SD']);
-    assert.deepEqual(rows[11].slice(21), ['1.5k', '75+', 'NA']);
-    assert.deepEqual(rows[12].slice(21, 23), ['4.25k', 55]);
-    assert.ok(Math.abs(rows[12][23] - 41.52059991327961) < 1e-12);
-});
+const { cases } = JSON.parse(readFileSync(new URL('./test/python-baseline.json', import.meta.url)));
+for (const fixture of cases) {
+    test(`Python baseline: ${fixture.id}`, () => {
+        const files = fixture.files.map(file => ({ ...file, measurement: readMeasurement(file.csv) }));
+        for (const file of files) {
+            if (file.analysis) {
+                assert.deepEqual(file.measurement.noise, file.analysis.noise.map(
+                    row => row.map(value => value ?? NaN)));
+            }
+        }
+        const calculate = () => calculateRows(files, fixture.coefficient);
+        if (fixture.error) {
+            assert.throws(calculate, new RegExp(`KeyError: ${fixture.error.message}`));
+            return;
+        }
+        assert.equal(encodeCSV(calculate()), fixture.expected);
+        assert.equal(downloadName(fixture.title), fixture.filename);
+    });
+}
 
 test('解析、待確認狀態與檔名清理', () => {
     assert.equal(readMeasurement('\uFEFF' + syntheticCSV(7, 1500).replace('P0', '"with, comma"')).noise[0].length, 20);
@@ -32,5 +41,5 @@ test('解析、待確認狀態與檔名清理', () => {
     assert.deepEqual(inferMetadata('Demo 1.5k_R.CSV'), { ear: 'R', frequency: '1.5', title: 'Demo' });
     assert.deepEqual(inferMetadata('unknown.csv'), { ear: '', frequency: '', title: 'unknown' });
     assert.equal(downloadName(' '), 'output.csv');
-    assert.equal(downloadName('Demo: result.csv'), 'Demo_ result.csv');
+    assert.equal(downloadName('Demo.csv'), 'Demo.csv_output.csv');
 });
