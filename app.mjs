@@ -1,4 +1,4 @@
-import { calculateRows, downloadName, encodeCSV, inferMetadata, readMeasurement } from './formatter.mjs';
+import { calculateResult, downloadName, encodeCSV, inferMetadata, readMeasurement } from './formatter.mjs';
 
 const byId = id => document.getElementById(id);
 const title = byId('titleInput');
@@ -244,11 +244,14 @@ calculate.addEventListener('click', async () => {
             message('輸入已變更，請重新計算。');
             return;
         }
-        const rows = calculateRows(files, factor);
+        const { rows, reviews } = calculateResult(files, factor);
         showRows(rows);
         result = { csv: encodeCSV(rows), name: downloadName(title.value) };
         download.disabled = false;
-        message(`已完成 ${files.length} 個檔案的計算。`);
+        const locations = reviews.map(({ ear, frequencyLabel }) =>
+            `${ear === 'L' ? '左耳' : '右耳'} ${frequencyLabel}Hz`);
+        const reviewMessage = locations.length ? `待複核（${locations.join('、')}）。` : '';
+        message(`已完成 ${files.length} 個檔案的計算。${reviewMessage}`);
     } catch (error) {
         message(error.message, true);
     } finally {

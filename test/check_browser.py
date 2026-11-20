@@ -23,23 +23,70 @@ def verify(page, base, fixture):
     page.locator("#titleInput").fill(fixture["title"])
     page.locator("#thresholdCoef").fill(str(fixture["coefficient"]))
     page.locator("#calculateBtn").click()
-    if fixture.get("error"):
-        page.wait_for_selector("#status.error")
-        assert f'KeyError: {fixture["error"]["message"]}' in page.locator("#status").inner_text()
-        assert page.locator("#downloadBtn").is_disabled()
-        return
-    page.wait_for_selector("#results table")
+    page.wait_for_selector("#results table, #status.error")
+    assert page.locator("#results table").is_visible(), page.locator("#status").inner_text()
     with page.expect_download() as event:
         page.locator("#downloadBtn").click()
     artifact = event.value
-    assert artifact.suggested_filename == fixture["filename"]
-    assert artifact.path().read_bytes() == fixture["expected"].encode("utf-8")
+    filename = fixture.get("filename", "factor_output.csv" if fixture["id"] == "changed-coefficient"
+                           else "output.csv")
+    assert artifact.suggested_filename == filename
+    downloaded = artifact.path().read_bytes()
     preview = page.locator("#results tr").evaluate_all(
         "(rows) => rows.map(row => Array.from(row.cells, cell => cell.textContent))")
-    assert preview == list(csv.reader(io.StringIO(fixture["expected"])))
+    assert preview == list(csv.reader(io.StringIO(downloaded.decode("utf-8"))))
+    if "expected" in fixture:
+        assert downloaded == fixture["expected"].encode("utf-8")
+    else:
+        assert_summaries(page, preview, fixture)
     page.locator("#titleInput").fill("changed")
     assert page.locator("#downloadBtn").is_disabled()
     assert page.locator("#results").is_hidden()
+
+
+def assert_summaries(page, rows, fixture):
+    status = page.locator("#status").inner_text()
+    for ear, start in (("L", 0), ("R", len(rows) // 2)):
+        files = sorted((f for f in fixture["files"] if f["ear"] == ear),
+                       key=lambda f: float(f["frequency"]))
+        summary = 3 + 9 * len(files)
+        for index, file in enumerate(files):
+            spl = 2 + 4 * len(files) + 5 * index
+            flags = [row[spl + 4] for row in rows[start + 1:start + 8]]
+            label = f'{float(file["frequency"]):g}k'
+            pattern, threshold, noise_row = file.get("summary", ("fffffff", "75+", None))
+            assert flags == [{"p": "pass", "f": "fail"}[flag] for flag in pattern]
+            nf = "NA" if noise_row is None else rows[start + noise_row][spl + 2]
+            assert rows[start + index + 1][summary:summary + 3] == [label, threshold, nf]
+            if threshold == "NA":
+                ear_label = {"L": "左耳", "R": "右耳"}[ear]
+                assert "待複核" in status and f"{ear_label} {label}Hz" in status
+    if not any(f.get("summary", (None, "75+"))[1] == "NA" for f in fixture["files"]):
+        assert "待複核" not in status
+
+
+def mixed_summary_fixture(cases):
+    source = {case["id"]: case["files"][0] for case in cases}
+    passed = list(csv.reader(io.StringIO(source["passes-7"]["csv"])))
+    failed = list(csv.reader(io.StringIO(source["passes-0"]["csv"])))
+    files = []
+    for ear, frequency, pattern, threshold, noise_row in (
+        ("L", 16, "fffffff", "75+", None),
+        ("L", 32, "pfpffff", "75.0", 1),
+        ("L", 8, "fppffff", "NA", None),
+        ("R", 4, "ppfffff", "65.0", 2),
+        ("R", 2, "ppppppp", "15.0", 7),
+        ("R", 8, "fpfpfff", "NA", None),
+    ):
+        buffer = io.StringIO()
+        csv.writer(buffer).writerows([passed[0], *[
+            (passed if flag == "p" else failed)[index]
+            for index, flag in enumerate(pattern, 1)
+        ]])
+        files.append(dict(ear=ear, frequency=frequency, csv=buffer.getvalue(),
+                          summary=(pattern, threshold, noise_row)))
+    return dict(id="mixed-summary", files=files, title="mixed", coefficient=2,
+                filename="mixed_output.csv")
 
 
 if __name__ == "__main__":
@@ -47,6 +94,7 @@ if __name__ == "__main__":
     parser.add_argument("url")
     parser.add_argument("--chrome")
     parser.add_argument("--fixture", type=Path, default=Path(__file__).with_name("python-baseline.json"))
+    parser.add_argument("--case")
     args = parser.parse_args()
     site = args.url.rstrip("/") + "/"
     base = site + "v2/"
@@ -76,7 +124,10 @@ if __name__ == "__main__":
         print("PASS legacy results, download and link to v2")
         requests.clear()
         page_errors.clear()
-        for fixture in fixtures["cases"]:
+        cases = [*fixtures["cases"], mixed_summary_fixture(fixtures["cases"])]
+        for fixture in cases:
+            if args.case and fixture["id"] != args.case:
+                continue
             verify(page, base, fixture)
             print(f'PASS {fixture["id"]}')
         assert not page_errors, page_errors

@@ -24,13 +24,17 @@ for (const fixture of cases) {
                     row => row.map(value => value ?? NaN)));
             }
         }
-        const calculate = () => calculateRows(files, fixture.coefficient);
+        const rows = calculateRows(files, fixture.coefficient);
         if (fixture.error) {
-            assert.throws(calculate, new RegExp(`KeyError: ${fixture.error.message}`));
-            return;
+            const { ear, frequency } = files[0];
+            const start = ear === 'L' ? 0 : rows.length / 2;
+            assert.deepEqual(rows[start + 1].slice(12), [`${frequency}k`, '75+', 'NA']);
+            assert.deepEqual(rows.slice(start + 1, start + 8).map(row => row[10]), Array(7).fill('fail'));
+        } else {
+            assert.equal(encodeCSV(rows), fixture.expected);
         }
-        assert.equal(encodeCSV(calculate()), fixture.expected);
-        assert.equal(downloadName(fixture.title), fixture.filename);
+        assert.equal(downloadName(fixture.title), fixture.filename ?? (
+            fixture.id === 'changed-coefficient' ? 'factor_output.csv' : 'output.csv'));
     });
 }
 

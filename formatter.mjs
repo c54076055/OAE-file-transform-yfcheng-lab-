@@ -104,7 +104,7 @@ function pythonFloat(value) {
     return Number.isInteger(value) ? `${value}.0` : String(value);
 }
 
-function analyze({ measurement, frequency, name }, coefficient) {
+function analyze({ measurement, frequency }, coefficient) {
     const dbv = [];
     const spl = [];
     for (const [index, level] of levels.entries()) {
@@ -116,23 +116,34 @@ function analyze({ measurement, frequency, name }, coefficient) {
         dbv.push([level, ...[measurement.v3[index], ...dbvStats].map(pythonFloat)]);
         spl.push([level, ...[signal, mean, sd].map(pythonFloat), signal > limit ? 'pass' : 'fail']);
     }
-    const passes = spl.filter(row => row[4] === 'pass').length;
-    if (!passes) throw new Error(`${name}：零列通過，Python 桌面版無法取得摘要雜訊（KeyError: -1）。`);
+    const firstFailure = spl.findIndex(row => row[4] === 'fail');
+    const passes = firstFailure === -1 ? spl.length : firstFailure;
+    const needsReview = passes === 0 && spl.some(row => row[4] === 'pass');
     const label = `${Number(frequency)}k`;
+    const threshold = passes ? pythonFloat(thresholds[passes - 1]) : (needsReview ? 'NA' : '75+');
     return {
         dbv: [[label, 'dBv', 'NF', 'NF_SD'], ...dbv],
         spl: [[label, 'dB SPL', 'NF(dB SPL)', 'NF_SD', 'Threshold'], ...spl],
-        summary: [label, pythonFloat(thresholds[passes - 1]), spl[passes - 1][2]],
+        summary: [label, threshold, passes ? spl[passes - 1][2] : 'NA'],
+        needsReview,
     };
 }
 
 export function calculateRows(files, coefficient) {
+    return calculateResult(files, coefficient).rows;
+}
+
+export function calculateResult(files, coefficient) {
     const count = Math.max(9, ...['L', 'R'].map(ear => files.filter(file => file.ear === ear).length + 1));
+    const reviews = [];
     const rows = ['L', 'R'].flatMap(ear => {
         const results = files.filter(file => file.ear === ear)
             .sort((a, b) => Number(a.frequency) - Number(b.frequency))
             .map(file => analyze(file, coefficient));
         const summary = [['  ', 'Threshold', 'NF'], ...results.map(result => result.summary)];
+        for (const result of results) {
+            if (result.needsReview) reviews.push({ ear, frequencyLabel: result.summary[0] });
+        }
         return Array.from({ length: count + 1 }, (_, index) => [
             index === 0 ? ear : ' ',
             ...results.flatMap(result => result.dbv[index] ?? Array(4).fill(' ')),
@@ -143,7 +154,10 @@ export function calculateRows(files, coefficient) {
         ]);
     });
     const width = Math.max(...rows.map(row => row.length));
-    return rows.map(row => [...row, ...Array(width - row.length).fill(' ')]);
+    return {
+        rows: rows.map(row => [...row, ...Array(width - row.length).fill(' ')]),
+        reviews,
+    };
 }
 
 export function encodeCSV(rows) {
