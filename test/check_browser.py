@@ -11,15 +11,22 @@ from playwright.sync_api import sync_playwright
 def verify(page, base, fixture):
     page.goto(base)
     for index, file in enumerate(fixture["files"]):
-        # Give the browser different initial metadata, then confirm the fixture values.
+        # Add explicit stimulus levels without changing the readings used by Python.
+        rows = list(csv.reader(io.StringIO(file["csv"])))
+        rows[0][7] = "Level()"
+        for level_index, row in enumerate(rows[1:]):
+            row[7] = f"{85 - 10 * level_index}_{75 - 10 * level_index}"
+        buffer = io.StringIO()
+        csv.writer(buffer).writerows(rows)
         guessed_ear = "R" if file["ear"] == "L" else "L"
-        name = f"synthetic{index}_1k_{guessed_ear}.csv"
+        name = f"synthetic{index}_{file['frequency']}k_{guessed_ear}.csv"
         page.locator("#fileInput").set_input_files(
-            {"name": name, "mimeType": "text/csv", "buffer": file["csv"].encode()})
+            {"name": name, "mimeType": "text/csv", "buffer": buffer.getvalue().encode()})
         button = page.get_by_role("button", name=name, exact=True)
         button.click()
         page.locator("#moveToLeft" if file["ear"] == "L" else "#moveToRight").click()
-        button.locator("..").locator("input").fill(str(file["frequency"]))
+        frequency = button.locator("..").locator("input.frequency")
+        assert float(frequency.input_value()) == float(file["frequency"])
     page.locator("#titleInput").fill(fixture["title"])
     page.locator("#thresholdCoef").fill(str(fixture["coefficient"]))
     page.locator("#calculateBtn").click()
@@ -35,10 +42,24 @@ def verify(page, base, fixture):
     preview = page.locator("#results tr").evaluate_all(
         "(rows) => rows.map(row => Array.from(row.cells, cell => cell.textContent))")
     assert preview == list(csv.reader(io.StringIO(downloaded.decode("utf-8"))))
-    if "expected" in fixture:
+    problem_rows = [row for row in preview if len(row) == 8 and row[0] != "來源"]
+    numeric = preview[:next((i for i, row in enumerate(preview) if not row), len(preview))]
+    special = {
+        "left-boundary": "雜訊視窗不足",
+        "unequal": "雜訊視窗不足",
+        "identical-signal-columns": "多個頻譜欄",
+        "missing-spectrum-value": "無效數值",
+    }
+    if fixture["id"] in special:
+        assert any(special[fixture["id"]] in row[-1] for row in problem_rows)
+        if fixture["id"] == "unequal":
+            assert len(numeric) > 0
+        if fixture["id"] == "missing-spectrum-value":
+            assert any("無法判定" in row for row in numeric)
+    elif "expected" in fixture:
         assert downloaded == fixture["expected"].encode("utf-8")
     else:
-        assert_summaries(page, preview, fixture)
+        assert_summaries(page, numeric, fixture)
     page.locator("#titleInput").fill("changed")
     assert page.locator("#downloadBtn").is_disabled()
     assert page.locator("#results").is_hidden()
@@ -86,6 +107,7 @@ def mixed_summary_fixture(cases):
         rows = [header]
         for index, flag in enumerate(pattern, 1):
             row = (passed if flag == "p" else failed)[index].copy()
+            row[0] = str(frequency * 1000)
             for column in spectrum_columns:
                 row[column] = str(float(row[column]) + index / 2)
             rows.append(row)
@@ -95,6 +117,41 @@ def mixed_summary_fixture(cases):
                           summary=(pattern, threshold, noise_row)))
     return dict(id="mixed-summary", files=files, title="mixed", coefficient=2,
                 filename="mixed_output.csv")
+
+
+def verify_batch_conflicts(page, base, sample):
+    page.goto(base)
+    source = list(csv.reader(io.StringIO(sample["files"][0]["csv"])))
+    source[0][7] = "Level()"
+    for index, row in enumerate(source[1:]):
+        row[7] = f"{85 - 10 * index}_{75 - 10 * index}"
+    buffer = io.StringIO()
+    csv.writer(buffer).writerows(source)
+    first = "first_11.3k_L.csv"
+    second = "copy_1k_L.csv"
+    bad = "invalid.csv"
+    page.locator("#fileInput").set_input_files([
+        {"name": name, "mimeType": "text/csv",
+         "buffer": b"bad" if name == bad else buffer.getvalue().encode()}
+        for name in (first, second, bad)
+    ])
+    row = page.get_by_role("button", name=second, exact=True).locator("..")
+    row.get_by_role("button", name="確認頻率").click()
+    page.locator("#calculateBtn").click()
+    page.wait_for_selector("#results table")
+    assert "已完成 1 筆" in page.locator("#status").inner_text()
+    assert "相同內容只計算一次" in page.locator("#results").inner_text()
+    page.get_by_role("button", name=second, exact=True).click()
+    page.locator("#moveToRight").click()
+    assert page.locator("#downloadBtn").is_disabled()
+    page.locator("#thresholdCoef").fill("-1")
+    page.locator("#calculateBtn").click()
+    page.wait_for_selector("#results table")
+    with page.expect_download() as event:
+        page.locator("#downloadBtn").click()
+    content = event.value.path().read_text("utf-8")
+    assert "門檻係數" in content and "不同耳別" in content and bad in content
+    assert "dB SPL" not in content
 
 
 if __name__ == "__main__":
@@ -138,6 +195,9 @@ if __name__ == "__main__":
                 continue
             verify(page, base, fixture)
             print(f'PASS {fixture["id"]}')
+        if not args.case:
+            verify_batch_conflicts(page, base, sample)
+            print("PASS batch duplicates, conflicts and error-only download")
         assert not page_errors, page_errors
         assert all(request.url.startswith(site) and request.method == "GET"
                    and request.post_data is None for request in requests)

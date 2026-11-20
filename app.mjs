@@ -1,4 +1,5 @@
-import { calculateResult, downloadName, encodeCSV, inferMetadata, readMeasurement } from './formatter.mjs';
+import { downloadName, encodeCSV, inferMetadata } from './formatter.mjs';
+import { inspectMeasurement, validateBatch } from './batch-validation.mjs';
 
 const byId = id => document.getElementById(id);
 const title = byId('titleInput');
@@ -88,11 +89,15 @@ function renderFiles() {
             frequency.className = 'frequency';
             frequency.id = `frequency-${file.id}`;
             frequency.value = file.frequency;
+            frequency.title = file.data?.distinct.length
+                ? `檔內頻率 ${file.data.distinct.join('、')} Hz${file.filenameFrequency ? `，檔名頻率 ${file.filenameFrequency} kHz` : ''}`
+                : '檔內頻率無法確認';
             frequency.placeholder = '待確認 kHz';
             frequency.setAttribute('aria-label', `${file.name} 的頻率（kHz）`);
             frequency.setAttribute('aria-invalid', String(!validFrequency(file.frequency)));
             frequency.addEventListener('input', () => {
                 file.frequency = frequency.value;
+                file.frequencyConflict = !file.data?.frequency || file.data.frequency !== Number(file.frequency);
                 frequency.setAttribute('aria-invalid', String(!validFrequency(file.frequency)));
                 invalidate();
             });
@@ -114,6 +119,44 @@ function renderFiles() {
             remove.setAttribute('aria-label', `移除 ${file.name}`);
             remove.addEventListener('click', () => removeFile(file));
             row.append(select, frequency, remove);
+            if (!file.error) {
+                const batch = document.createElement('input');
+                batch.type = 'text';
+                batch.value = file.batch ?? '';
+                batch.placeholder = '量測批次';
+                batch.setAttribute('aria-label', `${file.name} 的量測批次`);
+                batch.addEventListener('input', () => {
+                    file.batch = batch.value.trim();
+                    invalidate();
+                });
+                row.append(batch);
+                const official = document.createElement('button');
+                official.type = 'button';
+                official.textContent = file.official ? '取消正式筆別' : '設為正式筆別';
+                official.addEventListener('click', () => {
+                    const selectOfficial = !file.official;
+                    for (const entry of files) {
+                        if (entry.ear === file.ear && Number(entry.frequency) === Number(file.frequency)) entry.official = false;
+                    }
+                    file.official = selectOfficial;
+                    invalidate();
+                    renderFiles();
+                });
+                row.append(official);
+            }
+            if (file.frequencyConflict) {
+                const confirm = document.createElement('button');
+                confirm.type = 'button';
+                confirm.textContent = '確認頻率';
+                confirm.addEventListener('click', () => {
+                    if (!validFrequency(file.frequency)) return;
+                    file.frequencyConflict = false;
+                    file.frequencyConfirmed = true;
+                    invalidate();
+                    renderFiles();
+                });
+                row.append(confirm);
+            }
             panel.append(row);
         }
     }
@@ -141,6 +184,7 @@ for (const [ear, button] of Object.entries(moves)) {
 
 async function importFiles(batch) {
     if (!batch.length) return;
+    invalidate();
     if (!importing) errors.replaceChildren();
     importing++;
     updateControls();
@@ -151,17 +195,24 @@ async function importFiles(batch) {
             const bytes = await file.arrayBuffer().catch(() => { throw new Error('無法讀取檔案。'); });
             let content;
             try {
-                content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
             } catch {
                 throw new Error('CSV 須使用 UTF-8 編碼。');
             }
-            return { id: nextId++, name: file.name, measurement: readMeasurement(content), ...inferMetadata(file.name) };
+            const data = inspectMeasurement(content);
+            const metadata = inferMetadata(file.name);
+            const frequency = data.frequency ? String(data.frequency) : metadata.frequency;
+            const frequencyConflict = !data.frequency
+                || (metadata.frequency && Number(metadata.frequency) !== data.frequency)
+                || data.frequencies.some(value => !Number.isFinite(value) || value <= 0);
+            return { ...metadata, id: nextId++, name: file.name, data, content, frequency, frequencyConflict,
+                filenameFrequency: metadata.frequency };
         } catch (error) {
             const item = document.createElement('li');
             item.textContent = `${file.name}：${error.message}`;
             errors.append(item);
             errors.hidden = false;
-            return null;
+            return { ...inferMetadata(file.name), id: nextId++, name: file.name, error: error.message };
         }
     }));
     const valid = entries.filter(Boolean);
@@ -199,7 +250,8 @@ function showRows(rows) {
     const body = table.createTBody();
     for (const values of rows) {
         const row = body.insertRow();
-        for (const value of values) {
+        for (const entry of values) {
+            const value = String(entry);
             const cell = document.createElement(['L', 'R'].includes(values[0]) ? 'th' : 'td');
             cell.textContent = value;
             if (/^[+-]?(?:\d|inf$)/.test(value) && !value.includes('_') && !value.endsWith('k')) {
@@ -220,18 +272,9 @@ calculate.addEventListener('click', async () => {
         byId('chooseFiles').focus();
         return;
     }
-    const invalid = files.find(file => !file.ear || !validFrequency(file.frequency));
-    if (invalid) {
-        message(`${invalid.name}：${invalid.ear ? '請輸入有效的正數頻率（kHz）。' : '請選取檔案並移到左耳或右耳。'}`, true);
-        byId(`${invalid.ear ? 'frequency' : 'file'}-${invalid.id}`).focus();
-        return;
-    }
     const factor = coefficient.valueAsNumber;
     if (!Number.isFinite(factor) || factor < 0) {
         coefficient.setAttribute('aria-invalid', 'true');
-        message('門檻係數須為大於或等於零的數字。', true);
-        coefficient.focus();
-        return;
     }
     invalidate();
     const current = revision;
@@ -244,14 +287,14 @@ calculate.addEventListener('click', async () => {
             message('輸入已變更，請重新計算。');
             return;
         }
-        const { rows, reviews } = calculateResult(files, factor);
+        const { rows, reviews, count, issues } = validateBatch(files, factor);
         showRows(rows);
         result = { csv: encodeCSV(rows), name: downloadName(title.value) };
         download.disabled = false;
         const locations = reviews.map(({ ear, frequencyLabel }) =>
             `${ear === 'L' ? '左耳' : '右耳'} ${frequencyLabel}Hz`);
         const reviewMessage = locations.length ? `待複核（${locations.join('、')}）。` : '';
-        message(`已完成 ${files.length} 個檔案的計算。${reviewMessage}`);
+        message(`已完成 ${count} 筆計算。${issues.length ? `有 ${issues.length} 筆問題紀錄。` : ''}${reviewMessage}`);
     } catch (error) {
         message(error.message, true);
     } finally {
