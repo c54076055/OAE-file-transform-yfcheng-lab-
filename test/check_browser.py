@@ -48,7 +48,8 @@ if __name__ == "__main__":
     parser.add_argument("--chrome")
     parser.add_argument("--fixture", type=Path, default=Path(__file__).with_name("python-baseline.json"))
     args = parser.parse_args()
-    base = args.url.rstrip("/") + "/"
+    site = args.url.rstrip("/") + "/"
+    base = site + "v2/"
     fixtures = json.loads(args.fixture.read_text("utf-8"))
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=args.chrome)
@@ -57,16 +58,34 @@ if __name__ == "__main__":
         requests = []
         page.on("pageerror", lambda error: page_errors.append(str(error)))
         page.on("request", lambda request: requests.append(request))
+        page.goto(site)
+        sample = next(case for case in fixtures["cases"] if case["id"] == "passes-7")
+        payload = sample["files"][0]["csv"].encode("utf-8")
+        page.locator("#fileInput").set_input_files([
+            {"name": f"synthetic_{ear}.csv", "mimeType": "text/csv", "buffer": payload}
+            for ear in "LR"
+        ])
+        page.locator("#processBtn").click()
+        page.wait_for_selector("#resultsTable table")
+        with page.expect_download() as event:
+            page.locator("#downloadBtn").click()
+        assert event.value.suggested_filename == "testOut.csv"
+        assert event.value.path().stat().st_size > 0
+        page.locator("h1").get_by_role("link", name="新版", exact=True).click()
+        page.wait_for_url(base)
+        print("PASS legacy results, download and link to v2")
+        requests.clear()
+        page_errors.clear()
         for fixture in fixtures["cases"]:
             verify(page, base, fixture)
             print(f'PASS {fixture["id"]}')
         assert not page_errors, page_errors
-        assert all(request.url.startswith(base) and request.method == "GET"
+        assert all(request.url.startswith(site) and request.method == "GET"
                    and request.post_data is None for request in requests)
-        page.goto(base + "csv_processor.html")
+        page.goto(site + "csv_processor.html")
         page.wait_for_url(base)
-        page.locator('a[href="csv-viewer.html"]').click()
+        page.locator('a[href="../csv-viewer.html"]').click()
         page.locator("#file-input").set_input_files(
             {"name": "synthetic.csv", "mimeType": "text/csv", "buffer": b"a,b\n1,2\n"})
         page.wait_for_selector("#csv-preview table")
-        print("PASS legacy processor and independent viewer")
+        print("PASS processor alias and independent viewer")

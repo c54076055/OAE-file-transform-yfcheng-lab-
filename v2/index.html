@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OAE CSV 檔案處理器</title>
+    <link rel="stylesheet" href="../formatter.css">
+    <script type="module" src="../app.mjs"></script>
+</head>
+<body>
+    <main>
+        <header>
+            <h1>OAE CSV 檔案處理器</h1>
+            <a href="../csv-viewer.html">CSV 預覽器</a>
+        </header>
+        <label for="titleInput">匯出標題</label>
+        <input id="titleInput" type="text" placeholder="選填">
+        <div id="dropArea" class="drop-area">
+            <button id="chooseFiles" type="button">選擇 CSV 檔案</button>
+            <input id="fileInput" type="file" accept=".csv" multiple hidden>
+            <p>也可拖放多個 CSV。檔案僅在瀏覽器內處理。</p>
+        </div>
+        <ul id="importErrors" aria-live="polite" hidden></ul>
+        <div id="fileLists">
+            <section id="pendingPanel" class="panel" hidden>
+                <h2>待確認耳別</h2>
+                <ul id="pendingFiles"></ul>
+            </section>
+            <div class="ears">
+                <section class="panel">
+                    <h2>左耳</h2>
+                    <ul id="leftFiles"></ul>
+                </section>
+                <div class="moves" aria-label="移動選取的檔案">
+                    <button id="moveToLeft" type="button" disabled>← 移到左耳</button>
+                    <button id="moveToRight" type="button" disabled>移到右耳 →</button>
+                </div>
+                <section class="panel">
+                    <h2>右耳</h2>
+                    <ul id="rightFiles"></ul>
+                </section>
+            </div>
+        </div>
+        <div class="actions">
+            <div>
+                <label for="thresholdCoef">門檻係數</label>
+                <input id="thresholdCoef" type="number" min="0" step="any" value="2">
+            </div>
+            <button id="calculateBtn" class="primary" type="button">計算</button>
+            <button id="downloadBtn" type="button" disabled>下載 CSV</button>
+        </div>
+        <p id="status" role="status" aria-live="polite"></p>
+        <section aria-labelledby="resultsHeading">
+            <h2 id="resultsHeading">結果預覽</h2>
+            <p id="resultHint">計算後會在此顯示結果。</p>
+            <div id="results" class="results" role="region" aria-label="結果表格" tabindex="0" hidden></div>
+        </section>
+        <footer>ver 2026.11.19 © 2025–2026 YU JHIH-WEI, ROC(Taiwan). All Rights Reserved.</footer>
+    </main>
+</body>
+</html>
