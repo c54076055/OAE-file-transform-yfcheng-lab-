@@ -56,6 +56,8 @@ def assert_summaries(page, rows, fixture):
             label = f'{float(file["frequency"]):g}k'
             pattern, threshold, noise_row = file.get("summary", ("fffffff", "75+", None))
             assert flags == [{"p": "pass", "f": "fail"}[flag] for flag in pattern]
+            if "summary" in file:
+                assert len({row[spl + 2] for row in rows[start + 1:start + 8]}) == 7
             nf = "NA" if noise_row is None else rows[start + noise_row][spl + 2]
             assert rows[start + index + 1][summary:summary + 3] == [label, threshold, nf]
             if threshold == "NA":
@@ -69,6 +71,9 @@ def mixed_summary_fixture(cases):
     source = {case["id"]: case["files"][0] for case in cases}
     passed = list(csv.reader(io.StringIO(source["passes-7"]["csv"])))
     failed = list(csv.reader(io.StringIO(source["passes-0"]["csv"])))
+    header = passed[0]
+    spectrum_columns = [index for index, label in enumerate(header)
+                        if label.isdecimal() or label == "V3(dBv)"]
     files = []
     for ear, frequency, pattern, threshold, noise_row in (
         ("L", 16, "fffffff", "75+", None),
@@ -78,11 +83,14 @@ def mixed_summary_fixture(cases):
         ("R", 2, "ppppppp", "15.0", 7),
         ("R", 8, "fpfpfff", "NA", None),
     ):
+        rows = [header]
+        for index, flag in enumerate(pattern, 1):
+            row = (passed if flag == "p" else failed)[index].copy()
+            for column in spectrum_columns:
+                row[column] = str(float(row[column]) + index / 2)
+            rows.append(row)
         buffer = io.StringIO()
-        csv.writer(buffer).writerows([passed[0], *[
-            (passed if flag == "p" else failed)[index]
-            for index, flag in enumerate(pattern, 1)
-        ]])
+        csv.writer(buffer).writerows(rows)
         files.append(dict(ear=ear, frequency=frequency, csv=buffer.getvalue(),
                           summary=(pattern, threshold, noise_row)))
     return dict(id="mixed-summary", files=files, title="mixed", coefficient=2,
