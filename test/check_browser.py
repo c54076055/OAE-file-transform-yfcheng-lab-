@@ -81,10 +81,11 @@ def assert_summaries(page, rows, fixture):
                 assert len({row[spl + 2] for row in rows[start + 1:start + 8]}) == 7
             nf = "NA" if noise_row is None else rows[start + noise_row][spl + 2]
             assert rows[start + index + 1][summary:summary + 3] == [label, threshold, nf]
-            if threshold == "NA":
+            if pattern.startswith("f") and "p" in pattern:
                 ear_label = {"L": "左耳", "R": "右耳"}[ear]
                 assert "待複核" in status and f"{ear_label} {label}Hz" in status
-    if not any(f.get("summary", (None, "75+"))[1] == "NA" for f in fixture["files"]):
+    patterns = (file.get("summary", ("fffffff",))[0] for file in fixture["files"])
+    if not any(pattern.startswith("f") and "p" in pattern for pattern in patterns):
         assert "待複核" not in status
 
 
@@ -99,10 +100,10 @@ def mixed_summary_fixture(cases):
     for ear, frequency, pattern, threshold, noise_row in (
         ("L", 16, "fffffff", "75+", None),
         ("L", 32, "pfpffff", "75.0", 1),
-        ("L", 8, "fppffff", "NA", None),
+        ("L", 8, "fppffff", "75+", None),
         ("R", 4, "ppfffff", "65.0", 2),
         ("R", 2, "ppppppp", "15.0", 7),
-        ("R", 8, "fpfpfff", "NA", None),
+        ("R", 8, "fpfpfff", "75+", None),
     ):
         rows = [header]
         for index, flag in enumerate(pattern, 1):
