@@ -25,7 +25,10 @@ def verify(page, base, fixture):
         button = page.get_by_role("button", name=name, exact=True)
         button.click()
         page.locator("#moveToLeft" if file["ear"] == "L" else "#moveToRight").click()
-        frequency = button.locator("..").locator("input.frequency")
+        row = button.locator("..")
+        assert row.locator("input").count() == 1
+        assert row.get_by_role("button").count() == 2
+        frequency = row.locator("input.frequency")
         assert float(frequency.input_value()) == float(file["frequency"])
     page.locator("#titleInput").fill(fixture["title"])
     page.locator("#thresholdCoef").fill(str(fixture["coefficient"]))

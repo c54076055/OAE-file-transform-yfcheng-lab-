@@ -136,11 +136,11 @@ function analyze({ measurement, frequency, label, report = () => {} }, coefficie
     }
     const firstNonPass = spl.findIndex(row => row[4] !== 'pass');
     const passes = firstNonPass === -1 ? spl.length : firstNonPass;
-    const allFail = spl.every(row => row[4] === 'fail');
-    const review = spl[0][4] === 'fail' && spl.some(row => row[4] === 'pass');
+    const highestFailed = spl[0][4] === 'fail';
+    const review = highestFailed && spl.some(row => row[4] === 'pass');
     const hasThreshold = passes > 0 && spl[passes]?.[4] !== '無法判定';
     const frequencyLabel = label ?? `${Number(frequency)}k`;
-    const threshold = hasThreshold ? pythonFloat(thresholds[passes - 1]) : (allFail || review ? '75+' : 'NA');
+    const threshold = hasThreshold ? pythonFloat(thresholds[passes - 1]) : (highestFailed ? '75+' : 'NA');
     if (review) report(null, '最高級別未通過，較低級別有通過結果，待複核。');
     if (threshold === 'NA') report(null, '資料不足，無法確定摘要門檻。');
     return {

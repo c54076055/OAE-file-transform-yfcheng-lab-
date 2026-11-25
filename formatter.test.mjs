@@ -90,6 +90,10 @@ test('部分級別、無效數值、視窗外數值及錯誤下載', () => {
     assert.equal(invalid.rows[3][10], 'fail');
     const missing = batchFile({ mutate: rows => { rows.splice(2, 1); } });
     assert.equal(validateBatch([missing], 2).rows[2][10], '無法判定');
+    const missingAfterFail = batchFile({ passes: 0, mutate: rows => { rows.splice(2, 1); } });
+    const highestFailed = validateBatch([missingAfterFail], 2);
+    assert.deepEqual(highestFailed.rows[1].slice(12), ['8k', '75+', 'NA']);
+    assert.equal(highestFailed.rows[2][10], '無法判定');
     const error = validateBatch([{ name: 'invalid.csv', error: 'CSV 錯誤' }], NaN);
     assert.equal(error.count, 0);
     assert.equal(error.issues.length, 2);

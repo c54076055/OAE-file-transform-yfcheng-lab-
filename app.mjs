@@ -119,31 +119,6 @@ function renderFiles() {
             remove.setAttribute('aria-label', `移除 ${file.name}`);
             remove.addEventListener('click', () => removeFile(file));
             row.append(select, frequency, remove);
-            if (!file.error) {
-                const batch = document.createElement('input');
-                batch.type = 'text';
-                batch.value = file.batch ?? '';
-                batch.placeholder = '量測批次';
-                batch.setAttribute('aria-label', `${file.name} 的量測批次`);
-                batch.addEventListener('input', () => {
-                    file.batch = batch.value.trim();
-                    invalidate();
-                });
-                row.append(batch);
-                const official = document.createElement('button');
-                official.type = 'button';
-                official.textContent = file.official ? '取消正式筆別' : '設為正式筆別';
-                official.addEventListener('click', () => {
-                    const selectOfficial = !file.official;
-                    for (const entry of files) {
-                        if (entry.ear === file.ear && Number(entry.frequency) === Number(file.frequency)) entry.official = false;
-                    }
-                    file.official = selectOfficial;
-                    invalidate();
-                    renderFiles();
-                });
-                row.append(official);
-            }
             if (file.frequencyConflict) {
                 const confirm = document.createElement('button');
                 confirm.type = 'button';
